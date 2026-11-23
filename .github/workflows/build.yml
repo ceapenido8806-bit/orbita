@@ -1,0 +1,73 @@
+name: Gerar app Órbita (AAB)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - orbita-projeto.zip
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar arquivos do repositório
+        uses: actions/checkout@v4
+
+      - name: Conferir a senha (segredo ORBITA_SENHA)
+        env:
+          ORBITA_SENHA: ${{ secrets.ORBITA_SENHA }}
+        run: |
+          if [ -z "$ORBITA_SENHA" ]; then
+            echo "::error::Falta o segredo ORBITA_SENHA. Vá em Settings > Secrets and variables > Actions > New repository secret."
+            exit 1
+          fi
+
+      - name: Descompactar o projeto
+        run: unzip -q orbita-projeto.zip -d proj
+
+      - name: Preparar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Preparar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Instalar dependências
+        working-directory: proj
+        run: npm ci
+
+      - name: Colocar o jogo dentro do app
+        working-directory: proj
+        run: npx cap sync android
+
+      - name: Gerar o arquivo AAB
+        working-directory: proj/android
+        run: |
+          chmod +x gradlew
+          ./gradlew bundleRelease --no-daemon -PversionCode=${{ github.run_number }} -PversionName=1.0.${{ github.run_number }}
+
+      - name: Assinar o AAB
+        env:
+          ORBITA_SENHA: ${{ secrets.ORBITA_SENHA }}
+        run: |
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in proj/upload-key.jks.enc -out upload.jks -pass env:ORBITA_SENHA
+          AAB="orbita-v1.0.${{ github.run_number }}.aab"
+          cp proj/android/app/build/outputs/bundle/release/app-release.aab "$AAB"
+          jarsigner -sigalg SHA256withRSA -digestalg SHA-256 -keystore upload.jks -storepass "$ORBITA_SENHA" "$AAB" orbita
+          jarsigner -verify "$AAB"
+          rm -f upload.jks
+
+      - name: Publicar o AAB na aba Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v1.0.${{ github.run_number }}" "orbita-v1.0.${{ github.run_number }}.aab" \
+            --title "Órbita v1.0.${{ github.run_number }}" \
+            --notes "Arquivo .aab pronto para enviar ao Google Play Console."
